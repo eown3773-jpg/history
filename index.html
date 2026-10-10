@@ -511,23 +511,29 @@
     <div class="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4">
       <div class="flex items-center justify-between border-b border-slate-100 pb-3">
         <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
-          <i class="ph-bold ph-clipboard-text text-indigo-600"></i> JSON 텍스트 복사 ➔ 직접 붙여넣기 복원
+          <i class="ph-bold ph-clipboard-text text-indigo-600"></i> JSON 텍스트 복사 ➔ 직접 붙여넣기 등록
         </h3>
         <button onclick="closePasteModal()" class="text-slate-400 hover:text-slate-600">
           <i class="ph-bold ph-x text-lg"></i>
         </button>
       </div>
-      <p class="text-xs text-slate-500">
-        채팅창이나 문서의 JSON 내용을 복사(Ctrl+C)하여 아래 상자에 붙여넣고 [적용하기]를 누르면 안전하게 복원됩니다.
+      <p class="text-xs text-slate-500 leading-relaxed">
+        복사(Ctrl+C)한 JSON 텍스트를 아래 상자에 붙여넣으세요.<br>
+        <strong class="text-indigo-600">[기존 데이터 유지하고 추가]</strong>를 누르면 <strong>1주전 복습 보관함, 오답 기록이 그대로 유지</strong>된 채 새 지문만 합쳐집니다!
       </p>
       <textarea id="paste-input-area" rows="8" placeholder='[{"id":"...", "subject":"통일신라", ...}]' class="w-full text-xs font-mono p-3 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:outline-none"></textarea>
-      <div class="flex items-center justify-end gap-2 pt-2">
-        <button onclick="closePasteModal()" class="px-4 py-2 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold">
-          취소
+      <div class="flex items-center justify-between gap-2 pt-2 flex-wrap">
+        <button onclick="applyPastedJSON('overwrite')" class="px-3 py-2 text-rose-600 bg-rose-50 hover:bg-rose-100 rounded-xl text-xs font-bold transition border border-rose-200">
+          전체 덮어쓰기
         </button>
-        <button onclick="applyPastedJSON()" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-xs">
-          즉시 적용하기
-        </button>
+        <div class="flex items-center gap-2">
+          <button onclick="closePasteModal()" class="px-3.5 py-2 bg-slate-100 text-slate-600 rounded-xl text-xs font-bold">
+            취소
+          </button>
+          <button onclick="applyPastedJSON('merge')" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-xs flex items-center gap-1.5">
+            <i class="ph-bold ph-plus-circle"></i> 기존 데이터 유지하고 추가
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -1637,17 +1643,17 @@
       document.getElementById('paste-modal').classList.add('hidden');
     }
 
-    function applyPastedJSON() {
+    function applyPastedJSON(mode = 'merge') {
       const rawText = document.getElementById('paste-input-area').value;
       if (!rawText.trim()) {
         showToast('내용을 먼저 붙여넣어 주세요.');
         return;
       }
-      parseAndApplyJSON(rawText);
+      parseAndApplyJSON(rawText, mode);
       closePasteModal();
     }
 
-    function parseAndApplyJSON(rawStr) {
+    function parseAndApplyJSON(rawStr, mode = 'merge') {
       try {
         let cleaned = rawStr.trim();
         // Remove markdown backticks if present
@@ -1656,17 +1662,66 @@
         }
         const parsed = JSON.parse(cleaned);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          studyItems = parsed;
-          studyItems.forEach(item => {
-            if (typeof item.mistakeCount !== 'number') item.mistakeCount = item.isMistake ? 1 : 0;
-            if (typeof item.streakCount !== 'number') item.streakCount = 0;
-            if (typeof item.isGraduated !== 'boolean') item.isGraduated = (item.streakCount >= 2);
-            if (!item.createdAt) item.createdAt = Date.now() - (1000 * 60 * 60 * 24);
-          });
+          if (mode === 'overwrite') {
+            // 전체 덮어쓰기
+            studyItems = parsed;
+            studyItems.forEach(item => {
+              if (typeof item.mistakeCount !== 'number') item.mistakeCount = item.isMistake ? 1 : 0;
+              if (typeof item.streakCount !== 'number') item.streakCount = 0;
+              if (typeof item.isGraduated !== 'boolean') item.isGraduated = (item.streakCount >= 2);
+              if (!item.createdAt) item.createdAt = Date.now() - (1000 * 60 * 60 * 24);
+            });
+            showToast(`총 ${studyItems.length}개의 지문으로 전체 교체되었습니다.`);
+          } else {
+            // 기존 데이터 유지 & 병합 추가 (1주일 복습 보관함, 오답 기록 보존!)
+            const existingMap = new Map();
+            studyItems.forEach(item => {
+              // 고유 식별: id 또는 질문 내용 일치 여부
+              const key = item.id || item.question;
+              existingMap.set(key, item);
+            });
+
+            let addedCount = 0;
+            let updatedCount = 0;
+
+            parsed.forEach(newItem => {
+              const key = newItem.id || newItem.question;
+              if (existingMap.has(key)) {
+                // 이미 존재하는 문항: 나의 학습 진행 상태(오답 횟수, 1주전 보관함 여부)는 100% 보존!
+                const existing = existingMap.get(key);
+                existing.subject = newItem.subject || existing.subject;
+                existing.question = newItem.question || existing.question;
+                existing.answer = newItem.answer || existing.answer;
+                existing.trap = newItem.trap !== undefined ? newItem.trap : existing.trap;
+                // 기존 학습 상태 유지
+                updatedCount++;
+              } else {
+                // 새로운 문항 추가
+                const normalized = {
+                  id: newItem.id || Date.now().toString() + Math.random().toString(36).substr(2, 4),
+                  type: newItem.type || 'blind',
+                  subject: newItem.subject || '공통',
+                  question: newItem.question,
+                  answer: newItem.answer,
+                  trap: newItem.trap || '',
+                  isMistake: newItem.isMistake || false,
+                  mistakeCount: typeof newItem.mistakeCount === 'number' ? newItem.mistakeCount : 0,
+                  streakCount: typeof newItem.streakCount === 'number' ? newItem.streakCount : 0,
+                  isGraduated: typeof newItem.isGraduated === 'boolean' ? newItem.isGraduated : false,
+                  createdAt: newItem.createdAt || Date.now()
+                };
+                studyItems.unshift(normalized);
+                existingMap.set(normalized.id, normalized);
+                addedCount++;
+              }
+            });
+
+            showToast(`신규 ${addedCount}개 추가 완료! (기존 보관함 및 오답 기록 100% 안전 보존)`);
+          }
+
           saveData();
           renderManagementTable();
           initPracticeSession();
-          showToast(`총 ${studyItems.length}개의 단권화 지문이 성공적으로 복원되었습니다!`);
         } else {
           showToast('올바른 지문 배열(Array) 형태의 JSON이 아닙니다.');
         }
